@@ -1,5 +1,11 @@
 package isp.secrecy;
 
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Arrays;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+
 /**
  * Implement a brute force key search (exhaustive key search) if you know that the
  * message is:
@@ -28,7 +34,27 @@ public class A4ExhaustiveSearch {
         final String message = "I would like to keep this text confidential Bob. Kind regards, Alice.";
         System.out.println("[MESSAGE] " + message);
 
-        // TODO
+        final byte[] key = new byte[8];
+        new SecureRandom().nextBytes(key);
+        for (int i = 0; i < 5; i++) {
+            key[i] = 0;
+        }
+
+        final Cipher encrypt = Cipher.getInstance("DES/ECB/PKCS5Padding");
+        encrypt.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "DES"));
+        final byte[] ct = encrypt.doFinal(message.getBytes(StandardCharsets.UTF_8));
+        final byte[] foundKey = bruteForceKey(ct, message);
+
+        if (foundKey == null) {
+            System.out.println("Key not found.");
+        } else {
+            final Cipher decrypt = Cipher.getInstance("DES/ECB/PKCS5Padding");
+            decrypt.init(Cipher.DECRYPT_MODE, new SecretKeySpec(foundKey, "DES"));
+            final String decrypted = new String(decrypt.doFinal(ct), StandardCharsets.UTF_8);
+            System.out.println("[KEY] " + Arrays.toString(foundKey));
+            System.out.println("[DECRYPTED] " + decrypted);
+            System.out.println("Matches original: " + message.equals(decrypted));
+        }
     }
 
     /**
@@ -36,7 +62,25 @@ public class A4ExhaustiveSearch {
      * Return null if no matching key exists within the restricted search space.
      */
     public static byte[] bruteForceKey(byte[] ct, String message) throws Exception {
-        // TODO
+        final byte[] key = new byte[8];
+        final byte[] pt = message.getBytes(StandardCharsets.UTF_8);
+        final Cipher encrypt = Cipher.getInstance("DES/ECB/PKCS5Padding");
+
+        // The lowest bit of each DES key byte is a parity bit, so skip it.
+        for (int a = 0; a < 256; a += 2) {
+            key[5] = (byte) a;
+            for (int b = 0; b < 256; b += 2) {
+                key[6] = (byte) b;
+                for (int c = 0; c < 256; c += 2) {
+                    key[7] = (byte) c;
+                    encrypt.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "DES"));
+                    // A correct key produces the same ciphertext for the known message.
+                    if (Arrays.equals(ct, encrypt.doFinal(pt))) {
+                        return key;
+                    }
+                }
+            }
+        }
 
         return null;
     }
