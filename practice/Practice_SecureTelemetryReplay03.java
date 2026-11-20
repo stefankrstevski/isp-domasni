@@ -3,6 +3,7 @@ package isp.practice;
 import fri.isp.Agent;
 import fri.isp.Environment;
 
+import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
 import javax.crypto.spec.GCMParameterSpec;
@@ -16,57 +17,28 @@ import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
-import java.security.spec.ECGenParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 
 /**
  * PRACTICE MIDTERM 03 — Secure telemetry channel with replay protection.
  *
- * ORIGINAL PRACTICE TASK, inspired by the scope and structure of the earlier
- * midterms and the homework (ECDH, signatures, AES-GCM and agent messaging).
- * This is NOT an official previous-midterm question or solution.
+ * Sensor and Server:
+ * 1) Authenticate their temporary ECDH public keys using long-term ECDSA keys.
+ * 2) Derive the same AES-128 session key from the ECDH shared secret.
+ * 3) Exchange AES-GCM-protected measurements with authenticated sequence numbers.
+ * 4) Reject a replayed message, even though its AES-GCM tag is still valid.
  *
- * Scenario:
- *   sensor -> server sends three temperature measurements securely.
- *   An attacker later replays the second encrypted measurement verbatim.
- *
- * REQUIREMENTS:
- *   1. Sensor and Server have pre-trusted long-term EC SIGNING public keys.
- *      No certificate/PKI implementation is required.
- *   2. Each creates a NEW ephemeral EC keypair for ECDH (separate from its
- *      long-term signing keypair). They authenticate the exchange with ECDSA.
- *   3. Each derives the same AES-128 key:
- *        first 16 bytes of SHA256(ECDH_shared_secret).
- *      This simplified KDF is prescribed for this practice exercise.
- *   4. Sensor sends 3 AES-GCM messages under the session key.
- *      The wire format is [sequence (8 bytes), nonce (12 bytes), CT+tag].
- *      The sequence number MUST be authenticated as GCM AAD, even though it
- *      is transmitted in the clear.
- *   5. Server verifies GCM authentication, then checks that the sequence
- *      is strictly greater than the last accepted sequence. Only then does
- *      it process the measurement and update its counter.
- *   6. Sensor resends the EXACT same bytes from message #2. Server must
- *      reject the replay (not process it a second time).
- *
- * GOALS: Key agreement, mutual authentication, confidentiality, integrity,
- * key-holder authentication, and replay detection.
- *
- * Deliberately unfinished. Fill ALL // TODO sections yourself.
- * The TODO exceptions make the starting file compile but stop execution until
- * you implement it; a successful compile is NOT a passing assignment.
+ * This is an educational exercise based on the Java patterns in the ISP homework.
+ * As requested in the exercise, it uses SHA-256(shared secret) truncated to 16 bytes
+ * for key derivation; real protocols should use an appropriate KDF such as HKDF.
  */
 public class Practice_SecureTelemetryReplay03 {
-    private static final SecureRandom RNG = new SecureRandom();
-    private static final int AES_KEY_BYTES = 16;
-    private static final int NONCE_BYTES = 12;
-    private static final int GCM_TAG_BITS = 128;
-
     public static void main(String[] args) throws Exception {
-        // GIVEN: identity keys are provisioned securely beforehand.
-        // The long-term private keys must NOT be transmitted.
+        // GIVEN: Both agents know each other's authentic signing PUBLIC keys.
+        // These long-term ECDSA key pairs are NOT the temporary ECDH key pairs.
         final KeyPairGenerator identities = KeyPairGenerator.getInstance("EC");
-        identities.initialize(new ECGenParameterSpec("secp256r1"));
+        identities.initialize(256);
         final KeyPair sensorIdentity = identities.generateKeyPair();
         final KeyPair serverIdentity = identities.generateKeyPair();
 
@@ -75,76 +47,196 @@ public class Practice_SecureTelemetryReplay03 {
         env.add(new Agent("sensor") {
             @Override
             public void task() throws Exception {
-                // PART 1 — Generate NEW ephemeral ECDH keypair (not identity key).
-                // TODO 01: Generate a secp256r1 EC keypair for ECDH.
-                // TODO 02: Serialize and send the ephemeral public key A.
-                // TODO 03: Sign the bytes ("sensor" || A) using the sensor's
-                //          LONG-TERM ECDSA private key; send the signature.
-                //          Use SHA256withECDSA.
+                // STEP 1: Generate a fresh ECDH key pair and send its PUBLIC part.
+                final KeyPairGenerator kpgSensor = KeyPairGenerator.getInstance("EC");
+                kpgSensor.initialize(256); // Same style as AgentCommunicationECDH.java
+                final KeyPair keyPairSensorEphemeral = kpgSensor.generateKeyPair();
+                final byte[] publicA = keyPairSensorEphemeral.getPublic().getEncoded();
+                send("server", publicA);
 
-                // PART 2 — Authenticate the server's ECDH contribution.
-                // TODO 04: Receive server ephemeral public key B and its signature.
-                // TODO 05: Verify server signature covering ("server" || A || B)
-                //          with the pre-trusted serverIdentity PUBLIC key.
-                //          If invalid, abort BEFORE accepting the shared key.
-                // TODO 06: Use your ECDH PRIVATE key and server's ECDH PUBLIC key
-                //          to derive shared secret -> AES-128 session key.
-                //          Take SHA256(secret) and its first 16 bytes.
+                // STEP 2: Sign ("sensor" || A) with the LONG-TERM private key.
+                // The temporary ECDH private key is for key agreement, not signing.
+                final Signature signer = Signature.getInstance("SHA256withECDSA");
+                signer.initSign(sensorIdentity.getPrivate());
+                final byte[] identity = "sensor".getBytes(StandardCharsets.UTF_8);
+                signer.update(concat(identity, publicA));
+                final byte[] sensorSignature = signer.sign();
+                send("server", sensorSignature);
 
-                // PART 3 — Send a protected stream.
-                // TODO 07: Send these measurements, using sequence numbers 1,2,3:
-                //          "temperature=21.5", "temperature=22.0", "temperature=21.8"
-                //          For EACH message create a fresh 12-byte GCM nonce.
-                //          Use a 128-bit authentication tag.
-                //          Authenticate its 8-byte sequence as GCM AAD.
-                //          Send in EXACT order: seqBytes, nonce, ciphertext+tag.
-                //          Save all three byte[] components of message #2.
+                // STEP 3: Receive the server's ephemeral public key B and its
+                // signature. A signature is verified over the MESSAGE, not over
+                // the signature itself!
+                final byte[] publicB = receive("server");
+                final byte[] serverSignature = receive("server");
+                final PublicKey serverEcdhPublic = KeyFactory.getInstance("EC")
+                        .generatePublic(new X509EncodedKeySpec(publicB));
 
-                // PART 4 — Deliberately simulate a replay attack.
-                // TODO 08: Send the saved seqBytes, nonce and ciphertext+tag
-                //          from message #2 again, completely unchanged.
-                //          Never re-encrypt here: this is a replay test.
+                final Signature verifier = Signature.getInstance("SHA256withECDSA");
+                verifier.initVerify(serverIdentity.getPublic()); // Trusted identity key!
+                final byte[] serverSignedData = concat(
+                        "server".getBytes(StandardCharsets.UTF_8), concat(publicA, publicB));
+                verifier.update(serverSignedData);
+                if (!verifier.verify(serverSignature)) {
+                    throw new SecurityException("Invalid signature from Server");
+                }
+                print("Server ECDSA signature verified");
 
-                // TODO 09 (optional): log "Sensor finished sending".
-                throw new UnsupportedOperationException("TODO sensor tasks 01-09");
+                // STEP 4: ECDH = my temporary PRIVATE key + peer temporary PUBLIC key.
+                // Both agents independently compute identical secret bytes.
+                final KeyAgreement dh = KeyAgreement.getInstance("ECDH");
+                dh.init(keyPairSensorEphemeral.getPrivate());
+                dh.doPhase(serverEcdhPublic, true);
+                final byte[] sharedSecret = dh.generateSecret();
+
+                // This exam's KDF rule: SHA-256(shared secret), first 16 bytes.
+                // Do not print or send sharedSecret or the AES key.
+                final byte[] hashedSecret = MessageDigest.getInstance("SHA-256")
+                        .digest(sharedSecret);
+                final SecretKeySpec aesKey = new SecretKeySpec(hashedSecret, 0, 16, "AES");
+
+                // STEP 5: Encrypt three measurements with AES-GCM.
+                final String[] measurements = {
+                        "temperature=21.5", "temperature=22.0", "temperature=21.8"
+                };
+                final SecureRandom random = new SecureRandom();
+
+                // Keep the exact wire bytes of message #2 for the replay test.
+                byte[] savedSequence = null;
+                byte[] savedNonce = null;
+                byte[] savedCiphertext = null;
+
+                for (int i = 0; i < measurements.length; i++) {
+                    final long sequence = i + 1;
+                    // Big-endian 8-byte number; send it in the clear, but authenticate it.
+                    final byte[] sequenceBytes = ByteBuffer.allocate(Long.BYTES)
+                            .putLong(sequence).array();
+                    final byte[] nonce = new byte[12]; // GCM nonce, NOT secret
+                    random.nextBytes(nonce); // Fresh nonce for each encryption
+
+                    final Cipher encrypt = Cipher.getInstance("AES/GCM/NoPadding");
+                    encrypt.init(Cipher.ENCRYPT_MODE, aesKey,
+                            new GCMParameterSpec(128, nonce));
+                    encrypt.updateAAD(sequenceBytes); // Protect the sequence number
+                    final byte[] ciphertext = encrypt.doFinal(
+                            measurements[i].getBytes(StandardCharsets.UTF_8));
+
+                    // The GCM tag is already appended to ciphertext by doFinal().
+                    send("server", sequenceBytes);
+                    send("server", nonce);
+                    send("server", ciphertext);
+                    print("Sent authenticated measurement #%d", sequence);
+
+                    if (sequence == 2) {
+                        savedSequence = sequenceBytes.clone();
+                        savedNonce = nonce.clone();
+                        savedCiphertext = ciphertext.clone();
+                    }
+                }
+
+                // STEP 6: Replay EXACT message #2 without re-encrypting it.
+                // GCM authentication will still pass. The server must additionally
+                // reject the old sequence number to prevent duplicate processing.
+                send("server", savedSequence);
+                send("server", savedNonce);
+                send("server", savedCiphertext);
+                print("Replayed measurement #2 without modifying its bytes");
             }
         });
 
         env.add(new Agent("server") {
             @Override
             public void task() throws Exception {
-                // PART 1 — Authenticate Sensor.
-                // TODO 10: Receive A and the sensor signature in the exact
-                //          order in which Sensor sends them.
-                // TODO 11: Verify ("sensor" || A) using sensorIdentity PUBLIC key.
-                //          Abort if verification fails.
+                // STEP 1: Receive Sensor's ephemeral public key A and signature.
+                final byte[] publicA = receive("sensor");
+                final byte[] sensorSignature = receive("sensor");
+                final PublicKey sensorEcdhPublic = KeyFactory.getInstance("EC")
+                        .generatePublic(new X509EncodedKeySpec(publicA));
 
-                // PART 2 — Complete signed key exchange.
-                // TODO 12: Generate own NEW ephemeral EC keypair B.
-                // TODO 13: Sign ("server" || A || B) using serverIdentity PRIVATE
-                //          key, then send B and signature in that order.
-                // TODO 14: Derive same AES-128 key using own ephemeral PRIVATE
-                //          key plus Sensor's ephemeral PUBLIC key.
+                // STEP 2: Verify the message ("sensor" || A) using Sensor's
+                // TRUSTED long-term PUBLIC key, not the received ECDH public key.
+                final Signature verifier = Signature.getInstance("SHA256withECDSA");
+                verifier.initVerify(sensorIdentity.getPublic());
+                verifier.update(concat("sensor".getBytes(StandardCharsets.UTF_8), publicA));
+                if (!verifier.verify(sensorSignature)) {
+                    throw new SecurityException("Invalid signature from Sensor");
+                }
+                print("Sensor ECDSA signature verified");
 
-                // PART 3 — Receive three messages and one replay.
+                // STEP 3: Generate Server's own fresh ECDH pair and sign
+                // ("server" || A || B) with Server's LONG-TERM private key.
+                final KeyPairGenerator kpgServer = KeyPairGenerator.getInstance("EC");
+                kpgServer.initialize(256);
+                final KeyPair keyPairServerEphemeral = kpgServer.generateKeyPair();
+                final byte[] publicB = keyPairServerEphemeral.getPublic().getEncoded();
+
+                final Signature signer = Signature.getInstance("SHA256withECDSA");
+                signer.initSign(serverIdentity.getPrivate());
+                signer.update(concat("server".getBytes(StandardCharsets.UTF_8),
+                        concat(publicA, publicB)));
+                final byte[] serverSignature = signer.sign();
+                send("sensor", publicB);       // FIRST send B
+                send("sensor", serverSignature); // THEN send its signature
+
+                // STEP 4: Independently derive exactly the same AES-128 key.
+                final KeyAgreement dh = KeyAgreement.getInstance("ECDH");
+                dh.init(keyPairServerEphemeral.getPrivate());
+                dh.doPhase(sensorEcdhPublic, true);
+                final byte[] sharedSecret = dh.generateSecret();
+                final byte[] hashedSecret = MessageDigest.getInstance("SHA-256")
+                        .digest(sharedSecret);
+                final SecretKeySpec aesKey = new SecretKeySpec(hashedSecret, 0, 16, "AES");
+
+                // STEP 5: Validate three new measurements and one replay.
                 long lastAcceptedSequence = 0;
+                int accepted = 0;
+                int rejected = 0;
                 for (int attempt = 1; attempt <= 4; attempt++) {
-                    // TODO 15: Receive seqBytes, nonce, CT+tag in wire order.
-                    // TODO 16: Decrypt using AES/GCM/NoPadding, same 128-bit
-                    //          tag length, and authenticate seqBytes via AAD.
-                    //          Reject authentication failures.
-                    // TODO 17: Interpret seqBytes as signed big-endian long;
-                    //          reject <= lastAcceptedSequence (or invalid <=0).
-                    // TODO 18: For acceptable message ONLY: update the
-                    //          lastAcceptedSequence, then print temperature.
-                    // TODO 19: For replayed #2: print "REPLAY REJECTED";
-                    //          do not update counter or process temperature.
-                    //          Rejection should NOT block/hang the other agent.
-                    throw new UnsupportedOperationException("TODO server receive tasks 15-19");
+                    final byte[] sequenceBytes = receive("sensor");
+                    final byte[] nonce = receive("sensor");
+                    final byte[] ciphertext = receive("sensor");
+
+                    if (sequenceBytes.length != Long.BYTES) {
+                        throw new SecurityException("Sequence must be exactly 8 bytes");
+                    }
+                    if (nonce.length != 12) {
+                        throw new SecurityException("GCM nonce must be 12 bytes");
+                    }
+
+                    // Verify authentication before considering the plaintext.
+                    final Cipher decrypt = Cipher.getInstance("AES/GCM/NoPadding");
+                    decrypt.init(Cipher.DECRYPT_MODE, aesKey,
+                            new GCMParameterSpec(128, nonce));
+                    decrypt.updateAAD(sequenceBytes); // SAME AAD bytes as sender
+                    final byte[] plaintext;
+                    try {
+                        plaintext = decrypt.doFinal(ciphertext);
+                    } catch (AEADBadTagException ex) {
+                        rejected++;
+                        print("REJECTED: AES-GCM authentication failed");
+                        continue;
+                    }
+
+                    final long sequence = ByteBuffer.wrap(sequenceBytes).getLong();
+                    if (sequence <= 0 || sequence <= lastAcceptedSequence) {
+                        // A valid GCM tag DOES NOT prove the message is fresh.
+                        rejected++;
+                        print("REPLAY REJECTED: sequence %d, last accepted %d",
+                                sequence, lastAcceptedSequence);
+                        continue;
+                    }
+
+                    // Only now is it safe to process the new measurement.
+                    lastAcceptedSequence = sequence;
+                    accepted++;
+                    print("ACCEPTED #%d: %s", sequence,
+                            new String(plaintext, StandardCharsets.UTF_8));
                 }
 
-                // TODO 20: Confirm exactly 3 messages accepted and 1 rejected.
-                throw new UnsupportedOperationException("TODO server tasks 10-20");
+                // STEP 6: Check that no replayed measurement was processed.
+                print("Final result: %d accepted, %d rejected", accepted, rejected);
+                if (accepted != 3 || rejected != 1) {
+                    throw new SecurityException("Unexpected replay-protection result");
+                }
             }
         });
 
@@ -152,74 +244,7 @@ public class Practice_SecureTelemetryReplay03 {
         env.start();
     }
 
-    // -------------------- Optional helper scaffolding --------------------
-    // You may freely change/delete these signatures as you implement the task.
-    // They are deliberately NOT filled in for you.
-
-    private static KeyPair newEphemeralEcKeyPair() throws Exception {
-        // TODO H1: Return a fresh EC secp256r1 keypair.
-        throw new UnsupportedOperationException("TODO H1");
-    }
-
-    private static byte[] sign(byte[] message, KeyPair signingKeys) throws Exception {
-        // TODO H2: Use SHA256withECDSA and signingKeys.getPrivate().
-        throw new UnsupportedOperationException("TODO H2");
-    }
-
-    private static void verifyOrThrow(byte[] message, byte[] signature,
-                                      PublicKey trustedSignerPublicKey) throws Exception {
-        // TODO H3: Verify SHA256withECDSA using trustedSignerPublicKey.
-        //          Throw SecurityException on failure.
-        throw new UnsupportedOperationException("TODO H3");
-    }
-
-    private static PublicKey decodeEcPublic(byte[] encoded) throws Exception {
-        // TODO H4: X509EncodedKeySpec + KeyFactory.getInstance("EC").
-        throw new UnsupportedOperationException("TODO H4");
-    }
-
-    private static SecretKeySpec deriveSessionKey(KeyPair myEphemeralKeys,
-                                                   PublicKey peerEphemeralPublic) throws Exception {
-        // TODO H5: KeyAgreement.getInstance("ECDH"), init private,
-        //          doPhase(peer public, true), generateSecret().
-        //          SHA-256 the secret; first AES_KEY_BYTES -> SecretKeySpec.
-        throw new UnsupportedOperationException("TODO H5");
-    }
-
-    private static byte[] randomNonce() {
-        // TODO H6: Generate NONCE_BYTES cryptographically random bytes.
-        throw new UnsupportedOperationException("TODO H6");
-    }
-
-    private static byte[] encryptGcm(SecretKeySpec aesKey, byte[] nonce,
-                                     byte[] seqBytes, byte[] plaintext) throws Exception {
-        // TODO H7: Cipher AES/GCM/NoPadding; ENCRYPT_MODE; GCMParameterSpec.
-        //          Call updateAAD(seqBytes) BEFORE doFinal(plaintext).
-        throw new UnsupportedOperationException("TODO H7");
-    }
-
-    private static byte[] decryptGcm(SecretKeySpec aesKey, byte[] nonce,
-                                     byte[] seqBytes, byte[] ciphertextAndTag) throws Exception {
-        // TODO H8: Mirror H7 using DECRYPT_MODE, SAME seqBytes as AAD.
-        //          If the tag fails, doFinal throws AEADBadTagException.
-        throw new UnsupportedOperationException("TODO H8");
-    }
-
-    private static byte[] sequenceBytes(long sequence) {
-        // TODO H9: Use ByteBuffer.allocate(Long.BYTES).putLong(sequence).array().
-        throw new UnsupportedOperationException("TODO H9");
-    }
-
-    private static long decodeSequence(byte[] encoded) {
-        // TODO H10: Validate length == Long.BYTES, then ByteBuffer.wrap(...)
-        //           .getLong(). Use same byte order as H9.
-        throw new UnsupportedOperationException("TODO H10");
-    }
-
-    private static byte[] utf8(String value) {
-        return value.getBytes(StandardCharsets.UTF_8);
-    }
-
+    // Used only to construct the exact bytes that the signature authenticates.
     private static byte[] concat(byte[] left, byte[] right) {
         byte[] result = Arrays.copyOf(left, left.length + right.length);
         System.arraycopy(right, 0, result, left.length, right.length);
