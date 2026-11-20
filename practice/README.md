@@ -51,3 +51,7 @@ Both source files were compiled and run with Java 21 and a lightweight implement
 These files are educational reference implementations, NOT production TLS/PAKE/lock firmware. They reproduce coursework choices such as direct SHA-256-based ECDH key derivation and 1000 PBKDF2 iterations, which should be replaced by modern reviewed protocols, transcript-bound HKDF and appropriately costly password hashing in real systems. The course Environment simulates message channels, not actual NFC or secure networking.
 
 The supplied historical screenshots are incomplete in places. These implementations follow the visible protocols and fill in reasonable simulation details; they are not claimed to be official model solutions.
+
+## Unsolved exam practice (work through this with guidance)
+
+- [Practice_SecureTelemetryReplay03.java](./Practice_SecureTelemetryReplay03.java) — **original, unsolved** sensor-to-server secure telemetry assignment inspired by previous midterms. Implement mutual ECDSA authentication of ephemeral ECDH, derive AES key, send three AES-GCM measurements with authenticated sequence numbers, and reject a replayed message. All implementation steps are marked `// TODO`; initial placeholders intentionally throw `UnsupportedOperationException` until filled in. Work through them in order and request hints as needed.
