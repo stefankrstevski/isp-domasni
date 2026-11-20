@@ -1,5 +1,8 @@
 # Historical ISP Midterm 1 - Practice Solutions
 
+**Exam reference:** [WA1-WA4 cryptography implementation cheat sheet](./MIDTERM1_CRYPTO_IMPLEMENTATION_CHEATSHEET.md) — keys, ciphers, IVs/nonces, Java APIs, what to send, and what each primitive does/does not guarantee.
+
+
 These are commented reconstructions of two historical programming assignments from the screenshots. They use the same fri.isp.Agent / Environment simulator as the existing homework.
 
 ## Practice_OneSidedAuthenticatedKeyExchange01.java
