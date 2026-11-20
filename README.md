@@ -1,9 +1,10 @@
 # ISP labs: crypto cheat sheet
 
 Java examples of secrecy, integrity, authenticated encryption, key exchange, and
-signatures. Each class runs through its own `main()`. Most exercises are implemented;
-[A4ExhaustiveSearch](./secrecy/A4ExhaustiveSearch.java) still has TODOs, and
-[A5ActiveMITM](./secrecy/A5ActiveMITM.java) still forwards ciphertext unchanged.
+signatures. Each class runs through its own `main()`.
+[A4ExhaustiveSearch](./secrecy/A4ExhaustiveSearch.java) implements restricted DES key
+recovery, and [A5ActiveMITM](./secrecy/A5ActiveMITM.java) implements a CTR bit-flipping
+attack that changes the recipient without knowing the key.
 
 ## Code map and key APIs
 
@@ -93,14 +94,19 @@ PBKDF2 is for passwords; HKDF is for high-entropy shared secrets.
   decryption here uses `IvParameterSpec(nonce)`.
 - **CTR bit-flipping.** Since `C = P XOR keystream`, an attacker can calculate
   `C' = C XOR knownPlaintext XOR desiredPlaintext` without the key.
-  [A5](./secrecy/A5ActiveMITM.java) asks you to change only the recipient to
-  `isp@gmail.com`, padding that line with spaces to preserve its byte length and
-  the rest of the message. FMTP is fictional; the server only decrypts and prints.
+  [A5](./secrecy/A5ActiveMITM.java) XORs the intercepted recipient bytes with
+  `prf.denis@fri.si` and `isp@gmail.com   ` (three trailing spaces). This changes
+  the recipient to `isp@gmail.com` after trimming while preserving the line length,
+  newline, and remaining message. The IV is forwarded unchanged; the attacker never
+  uses the key. FMTP is fictional; the server only decrypts and prints.
   AEAD would detect the modified ciphertext.
 - **Weak-key recovery.** [A4](./secrecy/A4ExhaustiveSearch.java) varies only three DES
   key bytes: 2^24 byte representations, but 2^21 effective keys due to parity bits.
-  Search using the known plaintext and ciphertext, then verify the complete plaintext.
-  Equivalent recovered key bytes need not match the original bytes.
+  Its three nested loops advance by two to skip parity-bit duplicates, encrypt the
+  known plaintext with each candidate, and compare the complete ciphertext. After a
+  match, `main()` decrypts with the recovered key and prints `Matches original: true`
+  when the complete plaintext matches. Equivalent recovered key bytes need not match
+  the original bytes.
 - **Cheap bulk transfer.** [PublicSpace](./ae-pke/A2AgentCommunicationPublicSpace.java)
   sends 200 MiB openly, routing only its SHA-256 digest through ChaCha20-Poly1305 and
   AES-GCM links. Bob compares his computed hash with that authenticated digest.
