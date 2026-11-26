@@ -29,7 +29,7 @@ public class Midterm {
         // SETUP: Both agents already know each other's authentic RSA public keys.
         // RSA identity keys are distinct from the temporary ECDH key pairs.
         final KeyPairGenerator identities = KeyPairGenerator.getInstance("RSA");
-        identities.initialize(3072); // Approximately 128-bit security.
+        // Java 21 SunRsaSign defaults to 3072-bit RSA.
         final KeyPair sensorIdentity = identities.generateKeyPair();
         final KeyPair serverIdentity = identities.generateKeyPair();
         final int signatureLength = 3072 / 8; // 384 bytes per RSA signature.
